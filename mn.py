@@ -7,7 +7,14 @@ from cvxpy import norm as cvxnorm
 from cvxpy import vec as cvxvec
 
 
-
+def rmse(A, B):
+    """
+    rmse(A, B) is a function to compute the relative mean-squared
+    error between two matrices A and B, given by
+    1/(m*n) * sum_ij (A_ij - B_ij)^2
+    where A and B are m-by-n numpy arrays.
+    """
+    return np.sqrt(mean_squared_error(A,B))
 
 def plot_comparison(M, M_rec, show_error=True, **kwargs):
     """
