@@ -1,6 +1,7 @@
 #### modification of asberk's https://github.com/asberk/matrix-completion-whirlwind
 
 import numpy as np
+import matplotlib.pyplot as plt
 from cvxpy import Minimize, Problem, Variable, SCS
 from cvxpy import norm as cvxnorm
 from cvxpy import vec as cvxvec
