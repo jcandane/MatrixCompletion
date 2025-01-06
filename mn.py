@@ -5,6 +5,66 @@ from cvxpy import Minimize, Problem, Variable, SCS
 from cvxpy import norm as cvxnorm
 from cvxpy import vec as cvxvec
 
+
+
+
+def plot_comparison(M, M_rec, show_error=True, **kwargs):
+    """
+    plot_comparison(M, M_rec, show_error=True, show_colorbars=True, **kwargs)
+        plots two matrices, M and M_rec, side-by-side along with
+        optionally a plot of the error between the two (given by some
+        error map error_map)
+    Input:
+    M : the original matrix M
+    M_rec : the recovered matrix M_rec
+    show_error : if True (default) produce a third plot showing a 
+                 mapping of (M, M_rec) 
+                 (default: absolute error |M-M_rec|)
+    show_colorbars : 
+    kwargs:
+    figsize : the figure size (w, h); default is (15,8)
+    cmap : a string denoting the colormap to use for the plots,
+           defined according to plt.cm.cmaps_lsited (default: 'viridis')
+    fontsize : the font size for the labels on the plot (default: 16)
+    plot_titles : the plot titles for the first two plots 
+                  (default: ['$M$', '$M^*$'])
+    error_map : the error map to use for the third plot 
+                (only used if show_error=True). Default value is absolute
+                error, |M - M_rec|.
+    error_title : the title to use for the third plot. 
+    cb : if True (default) plot colorbars beneath the plots (recommended)
+    cb_orient : whether to show 'horizontal' or 'vertical' orientation 
+                of colourbar (default horizontal)
+    cb_pad : padding between plot and colourbar (default .05)
+    """
+    n_plots = 2
+    if show_error:
+        n_plots += 1
+    figsize=kwargs.get('figsize', (15,8))
+    cmap = kwargs.get('cmap', 'viridis')
+    fontsize = kwargs.get('size', 16)
+    plot_titles = kwargs.get('plot_titles', ['$M$', '$M^*$'])
+    error_map = kwargs.get('error_map', lambda x,y: np.abs(x-y))
+    error_title = kwargs.get('error_title', 'absolute error $|M - M^*|$')
+    cb = kwargs.get('show_colorbars', True)
+    
+    fig, axes = plt.subplots(1, n_plots, figsize=figsize)
+    matrices = [M, M_rec]
+    if n_plots == 3:
+        matrices.append(error_map(M, M_rec))
+        plot_titles.append(error_title)
+    for ax, mat, ptitle in zip(axes.flat, matrices, plot_titles):
+        I = ax.matshow(mat, cmap=cmap)
+        ax.set_title(ptitle, size=fontsize)
+        ax.axis('off')
+        if cb:
+            cb_orient = kwargs.get('orientation', 'horizontal')
+            cb_pad = kwargs.get('pad', 0.05)
+            fig.colorbar(I, ax=ax, orientation=cb_orient, pad=cb_pad)
+    print('RMSE = {}'.format(rmse(M, M_rec)))
+    return
+
+
 def matIndicesFromMask(mask):
     """
     matIndicesFromMask(mask) returns the matrix-indices 
