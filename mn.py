@@ -2,6 +2,9 @@
 
 import numpy as np
 import matplotlib.pyplot as plt
+
+from sklearn.metrics import mean_squared_error
+
 from cvxpy import Minimize, Problem, Variable, SCS
 from cvxpy import norm as cvxnorm
 from cvxpy import vec as cvxvec
