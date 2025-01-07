@@ -9,6 +9,8 @@ from cvxpy import Minimize, Problem, Variable, SCS
 from cvxpy import norm as cvxnorm
 from cvxpy import vec as cvxvec
 
+from scipy.sparse.linalg import svds
+from scipy.sparse import coo_matrix
 
 def rmse(A, B):
     """
@@ -101,7 +103,7 @@ def multiplyFromMatIdxList(U, V, Omega):
     """
     return np.array([U[j,:] @ V[k,:] for j,k in zip(*Omega)])
 
-def mcFrobSolveRightFactor_cvx(U, M_Omega, mask, **kwargs):
+def mcFrobSolveRightFactor_cvx(U, M_Omega, Omega_idx, shaper, **kwargs):
     """
     A solver for the right factor, V, in the problem 
         min FrobNorm( P_Omega(U * V.T - M) )
@@ -126,14 +128,17 @@ def mcFrobSolveRightFactor_cvx(U, M_Omega, mask, **kwargs):
             verbose = False
 
     # Parameters
-    n = mask.shape[1]
+    n = shaper[1]
     r = U.shape[1]
 
-    Omega_i, Omega_j = matIndicesFromMask(mask)
+    Omega_i, Omega_j = Omega_idx #matIndicesFromMask(mask)
     
     # Problem
-    V_T  = Variable((r, n))
+    V_T  = Variable((r, n)) ## V_T is an object!! not a physical tensor!!
+    ##print(V_T, U)
     obj  = Minimize(cvxnorm(cvxvec((U @ V_T)[Omega_i, Omega_j]) - M_Omega))
+    #obj  = Minimize(cvxnorm(cvxvec(np.einsum("Ir, rI -> I", U[Omega_i,:], V_T[:,Omega_j])) - M_Omega))
+    #obj  = Minimize(cvxnorm(cvxvec((np.einsum("Ir, Ir->I", U[Omega_i,:], V_T[:,Omega_j]))) - M_Omega))
     prob = Problem(obj)
     prob.solve(solver=solver, verbose=verbose)
     V = V_T.value.T
@@ -142,7 +147,7 @@ def mcFrobSolveRightFactor_cvx(U, M_Omega, mask, **kwargs):
     else:
         return V
 
-def mcFrobSolveLeftFactor_cvx(V, M_Omega, mask, **kwargs):
+def mcFrobSolveLeftFactor_cvx(V, M_Omega, Omega_idx, shaper, **kwargs):
     """
     mcFrobSolveLeftFactor_cvx(V, M_Omega, mask, **kwargs)
     A solver for the left factor, U, in the problem
@@ -168,13 +173,13 @@ def mcFrobSolveLeftFactor_cvx(V, M_Omega, mask, **kwargs):
             verbose = False
 
     # Parameters
-    m = mask.shape[0]
+    m = shaper[0]
     if V.shape[0] < V.shape[1]:
         # make sure V_T is "short and fat"
         V = V.T
     r = V.shape[1]
 
-    Omega_i, Omega_j = matIndicesFromMask(mask)
+    Omega_i, Omega_j = Omega_idx
 
     # Problem
     U    = Variable((m, r))
@@ -185,6 +190,9 @@ def mcFrobSolveLeftFactor_cvx(V, M_Omega, mask, **kwargs):
         return (U.value, prob.value)
     else:
         return U.value
+    
+
+
     
 def matrixCompletionSetup(r, m, n=None, p=None):
     """
@@ -228,7 +236,7 @@ def matrixCompletionSetup(r, m, n=None, p=None):
     M_Omega    = multiplyFromMatIdxList(U,V,Omega)
     return (U, V, M_Omega, Omega, Omega_mask)
 
-def altMinSense(M_Omega, Omega_mask, r, **kwargs):
+def altMinSense_(M_Omega, Omega_mask, r, **kwargs):
     """
     altMinSense(M_Omega, Omega_mask, r, **kwargs)
     The alternating minimization algorithm for a matrix completion
@@ -280,13 +288,14 @@ def altMinSense(M_Omega, Omega_mask, r, **kwargs):
     m, n = Omega_mask.shape
     # # Create initial guess from unbiased estimator # #
     # Set initial entries of estimator
-    unbiased = np.zeros(Omega_mask.shape)
+    unbiased = np.zeros((m,n))
     unbiased[matIndicesFromMask(Omega_mask)] = M_Omega
     # scale entries of estimator by an estimate on the sampling
     # probability p so that this estimator is unbiased
-    unbiased /= (M_Omega.size / Omega_mask.size)
+    unbiased /= (M_Omega.size / (m*n))
     # compute svd of the unbiased estimator ### perhaps sparse SVD??
-    unbiased_left, unbiased_sing, unbiased_right = np.linalg.svd(unbiased)
+    #unbiased_left, unbiased_sing, unbiased_right = np.linalg.svd(unbiased)
+    unbiased_left, unbiased_sing, unbiased_right = svds(unbiased, k=r)
     U = unbiased_left[:, :r]
     objPrevious = np.inf
     for T in range(max_iters):
@@ -304,3 +313,181 @@ def altMinSense(M_Omega, Omega_mask, r, **kwargs):
                 print('Iteration {}: Objective = {}'.format(T, objValue), end='\r')
             objPrevious = objValue
     return U, V
+
+
+
+
+
+def altMinSenseXX(M_Omega, Omega_mask, Omega_idx, r, **kwargs):
+    """
+    The alternating minimization algorithm for a matrix completion
+    version of the matrix sensing problem
+    
+    Input
+    max_iters : the maximum allowable number of iterations of the algorithm
+    optCond : the optimality conditions that is measured 
+              (default: absolute difference)
+    optTol : the optimality tolerance used to determine stopping conditions
+    solveLeft : a function to solve for the left matrix, Uj, on iteration j
+                (default: mcFrobSolveLeftFactor_cvxpy)
+    solveRight : a function to solve for the right matrix, Vj, on iteration j
+                (default: mcFrobSolveRightFactor_cvxpy)
+    solver : which solver to use (for cvxpy only) (default: SCS)
+    verbose : 0 (none), 1 (light, default) or 2 (full) level of verbosity
+
+    Ouptut
+    U : the left m-by-r factor
+    V : the right n-by-r factor
+    """
+    max_iters = kwargs.get('max_iters', 50)
+    method = kwargs.get('method', 'cvx')
+    optCond = kwargs.get('optCond', lambda x, y: np.abs(x - y))
+    optTol = kwargs.get('optTol', 1e-4)
+    solveLeft = kwargs.get('leftSolve', None)
+    solveRight = kwargs.get('rightSolve', None)
+    opts = kwargs.get('methodOptions', None)
+    verbose = kwargs.get('verbose', 1)
+
+    if method == 'cvx':
+        solveLeft = mcFrobSolveLeftFactor_cvx
+        solveRight = mcFrobSolveRightFactor_cvx
+        if opts is None:
+            opts = {'solver': SCS, 'verbose': verbose}
+        elif opts.get('solver') is None:
+            opts['solver'] = SCS
+
+    if not verbose:
+        verbose = False
+        verbose_solve = False
+    elif (verbose is True) or (verbose == 1):
+        verbose = True
+        verbose_solve = False
+    elif (verbose == 2):
+        verbose = True
+        verbose_solve = True
+
+    m, n = Omega_mask.shape
+    # # Create initial guess from unbiased estimator # #
+    # Set initial entries of estimator
+    data     = M_Omega / (M_Omega.size / (m*n))
+    unbiased = coo_matrix((data, Omega_idx), shape=(m, n))
+
+    #unbiased = np.zeros((m,n))
+    #unbiased[Omega_idx] = M_Omega / (M_Omega.size / (m*n))
+    # scale entries of estimator by an estimate on the sampling
+    # probability p so that this estimator is unbiased
+    #unbiased /= (M_Omega.size / (m*n))
+    # compute svd of the unbiased estimator ### perhaps sparse SVD??
+    #unbiased_left, unbiased_sing, unbiased_right = np.linalg.svd(unbiased)
+    unbiased_left, unbiased_sing, unbiased_right = svds(unbiased, k=r)
+    U = unbiased_left[:, :r]
+    objPrevious = np.inf
+    for T in range(max_iters):
+        V = solveRight(U, M_Omega, Omega_idx, (m,n), **opts)
+        U, objValue = solveLeft(V, M_Omega, Omega_idx, (m,n), **opts,
+                                returnObjectiveValue=True)
+        
+        if optCond(objValue, objPrevious) < optTol:
+            print()
+            print('Optimality conditions satisfied.')
+            print('Objective value = {:5.3g}'.format(objValue))
+            break
+        else:
+            if verbose:
+                print('Iteration {}: Objective = {}'.format(T, objValue), end='\r')
+            objPrevious = objValue
+    return U, V
+
+
+
+
+
+
+def altMinSense(unbiased, r, **kwargs):
+    """
+    The alternating minimization algorithm for a matrix completion
+    version of the matrix sensing problem
+    
+    Input
+    max_iters : the maximum allowable number of iterations of the algorithm
+    optCond : the optimality conditions that is measured 
+              (default: absolute difference)
+    optTol : the optimality tolerance used to determine stopping conditions
+    solveLeft : a function to solve for the left matrix, Uj, on iteration j
+                (default: mcFrobSolveLeftFactor_cvxpy)
+    solveRight : a function to solve for the right matrix, Vj, on iteration j
+                (default: mcFrobSolveRightFactor_cvxpy)
+    solver : which solver to use (for cvxpy only) (default: SCS)
+    verbose : 0 (none), 1 (light, default) or 2 (full) level of verbosity
+
+    Ouptut
+    U : the left m-by-r factor
+    V : the right n-by-r factor
+    """
+    max_iters = kwargs.get('max_iters', 50)
+    method = kwargs.get('method', 'cvx')
+    optCond = kwargs.get('optCond', lambda x, y: np.abs(x - y))
+    optTol = kwargs.get('optTol', 1e-4)
+    solveLeft = kwargs.get('leftSolve', None)
+    solveRight = kwargs.get('rightSolve', None)
+    opts = kwargs.get('methodOptions', None)
+    verbose = kwargs.get('verbose', 1)
+
+    if method == 'cvx':
+        solveLeft = mcFrobSolveLeftFactor_cvx
+        solveRight = mcFrobSolveRightFactor_cvx
+        if opts is None:
+            opts = {'solver': SCS, 'verbose': verbose}
+        elif opts.get('solver') is None:
+            opts['solver'] = SCS
+
+    if not verbose:
+        verbose = False
+        verbose_solve = False
+    elif (verbose is True) or (verbose == 1):
+        verbose = True
+        verbose_solve = False
+    elif (verbose == 2):
+        verbose = True
+        verbose_solve = True
+
+    # # Create initial guess from unbiased estimator # #
+    # Set initial entries of estimator
+    #data     = M_Omega / (unbiased.size / (m*n))
+    #unbiased = coo_matrix((data, Omega_idx), shape=(m, n))
+    
+    Omega_idx = [unbiased.row, unbiased.col]
+    shaper    = unbiased.shape
+    M_Omega   = unbiased.data * (unbiased.size / np.prod(shaper))
+    
+
+    #unbiased = np.zeros((m,n))
+    #unbiased[Omega_idx] = M_Omega / (M_Omega.size / (m*n))
+    # scale entries of estimator by an estimate on the sampling
+    # probability p so that this estimator is unbiased
+    #unbiased /= (M_Omega.size / (m*n))
+    # compute svd of the unbiased estimator ### perhaps sparse SVD??
+    #unbiased_left, unbiased_sing, unbiased_right = np.linalg.svd(unbiased)
+    unbiased_left, unbiased_sing, unbiased_right = svds(unbiased, k=r)
+    U = unbiased_left[:, :r]
+    objPrevious = np.inf
+    for T in range(max_iters):
+        V = solveRight(U, M_Omega, Omega_idx, shaper, **opts)
+        U, objValue = solveLeft(V, M_Omega, Omega_idx, shaper, **opts,
+                                returnObjectiveValue=True)
+        
+        if optCond(objValue, objPrevious) < optTol:
+            print()
+            print('Optimality conditions satisfied.')
+            print('Objective value = {:5.3g}'.format(objValue))
+            break
+        else:
+            if verbose:
+                print('Iteration {}: Objective = {}'.format(T, objValue), end='\r')
+            objPrevious = objValue
+    return U, V
+
+
+
+
+
